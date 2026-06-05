@@ -1,22 +1,70 @@
 <!DOCTYPE html>
-<html>
+<html lang="uk">
 <head>
-  <title>QR Validator</title>
-  <script src="https://unpkg.com/html5-qrcode"></script>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>QR RSA Scanner</title>
+
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+
+<style>
+html, body {
+    margin: 0;
+    padding: 0;
+    background: black;
+    overflow: hidden;
+}
+video {
+    width: 100vw;
+    height: 100vh;
+    object-fit: cover;
+}
+button {
+    position: absolute;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 12px 20px;
+    border-radius: 10px;
+    border: none;
+    background: #1e88e5;
+    color: white;
+}
+</style>
 </head>
+
 <body>
 
-<h2>QR Scanner</h2>
-
-<div id="reader" style="width:300px;"></div>
-<p id="result">Waiting...</p>
+<button id="startBtn">Start Scanner</button>
+<video id="video" autoplay playsinline></video>
+<canvas id="canvas" style="display:none;"></canvas>
 
 <script>
-let publicKey;
 
+const btn = document.getElementById("startBtn");
+const video = document.getElementById("video");
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d", { willReadFrequently: true });
+
+let stream = null;
+let scanning = false;
+let publicKey = null;
+
+
+// ================= LOG =================
+function log(msg, data = null) {
+    const time = new Date().toLocaleTimeString();
+    if (data) console.log(`[${time}] ${msg}`, data);
+    else console.log(`[${time}] ${msg}`);
+}
+
+
+// ================= PUBLIC KEY =================
 async function loadKey() {
-  const pem = `
-  -----BEGIN PUBLIC KEY-----
+
+    log("Loading public key...");
+
+    const pem = `-----BEGIN PUBLIC KEY-----
 MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEArkpbPrYENPZgINWoQeCM
 R+HWh8IWJx9Zyrpj+ODA6BMTRWORxYrKfcu4s4jSoj7KoDk3mptIrKpHdYRCSaLg
 5WSifhjRTKZUNuL2O4Vyfe3eRZmz3EtwtbGN5zLlhmtOXMo9L8EQpsP//9Q+HisN
@@ -24,66 +72,128 @@ E2TnC0+2YEBXzgHRdLn/LP7TnfWiF8SEfa2x8k+PqnZHaRjonBpsXzji2ldUyOLf
 ETZnYuQkaNIRhZcUNl6aze4ySwTGLycSw+YnipfEX95+MPoenE+PzmlAcl9Jo7t8
 tFNsxpx00ockm9aKKa5a96ci/PgfTauFQ8IIvIvB0IafMYQL4VFDQ2/vOT14DOGC
 qQIDAQAB
------END PUBLIC KEY-----
-  `;
+-----END PUBLIC KEY-----`;
 
-  publicKey = await crypto.subtle.importKey(
-    "spki",
-    str2ab(window.atob(pem.replace(/-----(BEGIN|END) PUBLIC KEY-----/g,''))),
-    { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
-    true,
-    ["verify"]
-  );
+    const binary = atob(pem.replace(/-----.*-----/g, '').replace(/\s/g, ''));
+    const buffer = new Uint8Array([...binary].map(c => c.charCodeAt(0)));
+
+    publicKey = await crypto.subtle.importKey(
+        "spki",
+        buffer.buffer,
+        { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+        true,
+        ["verify"]
+    );
+
+    log("Public key loaded ✔");
 }
 
-// base64 → ArrayBuffer
-function str2ab(str) {
-  const bytes = new Uint8Array(str.length);
-  for (let i = 0; i < str.length; i++) {
-    bytes[i] = str.charCodeAt(i);
-  }
-  return bytes.buffer;
-}
 
-async function verify(dataObj, signatureB64) {
-  const data = new TextEncoder().encode(JSON.stringify(dataObj));
-  const signature = Uint8Array.from(atob(signatureB64), c => c.charCodeAt(0));
+// ================= BASE64 =================
+function base64ToBuffer(base64) {
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
 
-  return await crypto.subtle.verify(
-    "RSASSA-PKCS1-v1_5",
-    publicKey,
-    signature,
-    data
-  );
-}
-
-function startScanner() {
-  const scanner = new Html5Qrcode("reader");
-
-  scanner.start(
-    { facingMode: "environment" },
-    { fps: 10 },
-    async (decodedText) => {
-
-      try {
-        const parsed = JSON.parse(decodedText);
-
-        const data = parsed[0];
-        const sign = parsed[1].sign;
-
-        const valid = await verify(data, sign);
-
-        document.getElementById("result").innerText =
-          valid ? "✔ VALID" : "❌ INVALID";
-
-      } catch (e) {
-        document.getElementById("result").innerText = "QR ERROR";
-      }
+    for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
     }
-  );
+
+    return bytes.buffer;
 }
 
-loadKey().then(startScanner);
+
+// ================= CANONICAL JSON =================
+function canonicalJSON(obj) {
+    return JSON.stringify(obj, Object.keys(obj).sort());
+}
+
+
+// ================= VERIFY =================
+async function verify(dataObj, signatureB64) {
+
+    log("Verifying signature...");
+
+    const dataStr = canonicalJSON(dataObj);
+
+    const data = new TextEncoder().encode(dataStr);
+    const signature = base64ToBuffer(signatureB64);
+
+    const valid = await crypto.subtle.verify(
+        "RSASSA-PKCS1-v1_5",
+        publicKey,
+        signature,
+        data
+    );
+
+    log(valid ? "VALID ✔" : "INVALID ❌");
+
+    return valid;
+}
+
+
+// ================= START =================
+btn.onclick = async () => {
+
+    btn.style.display = "none";
+
+    await loadKey();
+
+    stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "environment" }
+    });
+
+    video.srcObject = stream;
+    await video.play();
+
+    log("Camera started ✔");
+
+    scanning = true;
+    requestAnimationFrame(scan);
+};
+
+
+// ================= SCAN =================
+function scan() {
+
+    if (!scanning) return;
+
+    if (video.readyState === video.HAVE_ENOUGH_DATA) {
+
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+
+        ctx.drawImage(video, 0, 0);
+
+        const image = ctx.getImageData(0, 0, canvas.width, canvas.height);
+
+        const code = jsQR(image.data, image.width, image.height);
+
+        if (code) {
+
+            log("QR DETECTED", code.data);
+
+            try {
+                const parsed = JSON.parse(code.data);
+
+                const data = parsed[0];
+                const sign = parsed[1].sign;
+
+                log("DATA", data);
+                log("SIGN", sign);
+
+                verify(data, sign).then(valid => {
+                    log("RESULT", valid ? "VALID" : "INVALID");
+                });
+
+            } catch (e) {
+                log("QR FORMAT ERROR");
+            }
+        }
+    }
+
+    requestAnimationFrame(scan);
+}
+
 </script>
 
 </body>
