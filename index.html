@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>QR Validator</title>
+  <script src="https://unpkg.com/html5-qrcode"></script>
+</head>
+<body>
+
+<h2>QR Scanner</h2>
+
+<div id="reader" style="width:300px;"></div>
+<p id="result">Waiting...</p>
+
+<script>
+let publicKey;
+
+async function loadKey() {
+  const pem = `
+  -----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEArkpbPrYENPZgINWoQeCM
+R+HWh8IWJx9Zyrpj+ODA6BMTRWORxYrKfcu4s4jSoj7KoDk3mptIrKpHdYRCSaLg
+5WSifhjRTKZUNuL2O4Vyfe3eRZmz3EtwtbGN5zLlhmtOXMo9L8EQpsP//9Q+HisN
+E2TnC0+2YEBXzgHRdLn/LP7TnfWiF8SEfa2x8k+PqnZHaRjonBpsXzji2ldUyOLf
+ETZnYuQkaNIRhZcUNl6aze4ySwTGLycSw+YnipfEX95+MPoenE+PzmlAcl9Jo7t8
+tFNsxpx00ockm9aKKa5a96ci/PgfTauFQ8IIvIvB0IafMYQL4VFDQ2/vOT14DOGC
+qQIDAQAB
+-----END PUBLIC KEY-----
+  `;
+
+  publicKey = await crypto.subtle.importKey(
+    "spki",
+    str2ab(window.atob(pem.replace(/-----(BEGIN|END) PUBLIC KEY-----/g,''))),
+    { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+    true,
+    ["verify"]
+  );
+}
+
+// base64 → ArrayBuffer
+function str2ab(str) {
+  const bytes = new Uint8Array(str.length);
+  for (let i = 0; i < str.length; i++) {
+    bytes[i] = str.charCodeAt(i);
+  }
+  return bytes.buffer;
+}
+
+async function verify(dataObj, signatureB64) {
+  const data = new TextEncoder().encode(JSON.stringify(dataObj));
+  const signature = Uint8Array.from(atob(signatureB64), c => c.charCodeAt(0));
+
+  return await crypto.subtle.verify(
+    "RSASSA-PKCS1-v1_5",
+    publicKey,
+    signature,
+    data
+  );
+}
+
+function startScanner() {
+  const scanner = new Html5Qrcode("reader");
+
+  scanner.start(
+    { facingMode: "environment" },
+    { fps: 10 },
+    async (decodedText) => {
+
+      try {
+        const parsed = JSON.parse(decodedText);
+
+        const data = parsed[0];
+        const sign = parsed[1].sign;
+
+        const valid = await verify(data, sign);
+
+        document.getElementById("result").innerText =
+          valid ? "✔ VALID" : "❌ INVALID";
+
+      } catch (e) {
+        document.getElementById("result").innerText = "QR ERROR";
+      }
+    }
+  );
+}
+
+loadKey().then(startScanner);
+</script>
+
+</body>
+</html>
